@@ -4,6 +4,8 @@ local CommandBar = {
     NotificationHolder = nil,
 	AutoComplete = nil,
 	Tooltip = nil,
+	_acConn = nil,
+	_acGen = nil,
     Commands = {},
     BuiltInCommands = {},
     Aliases = {},
@@ -539,24 +541,14 @@ function CommandBar:__FormatSelector(selector)
 	return out
 end
 
--- Matches a raw token to a player:
---   all-digit token -> exact UserId match only (id must be complete)
---   anything else   -> exact Name/DisplayName match, then partial (substring) match
+-- Matches a raw token to a player by Name/DisplayName only:
+-- exact match first, then partial (substring) match.
 local function matchUserToken(token)
 	if token == "" then return nil end
 	-- Tolerate a leading "@" (mention inserts, quoted "@Name").
 	if token:sub(1, 1) == "@" then
 		token = token:sub(2)
 		if token == "" then return nil end
-	end
-	if token:match("^%d+$") then
-		local id = tonumber(token)
-		for _, p in ipairs(Players:GetPlayers()) do
-			if p.UserId == id then
-				return p
-			end
-		end
-		return nil
 	end
 	local lower = token:lower()
 	local players = Players:GetPlayers()
@@ -608,8 +600,8 @@ end
 
 -- Player-name / selector completions for a raw prefix (e.g. "bu", "@bu", "al").
 -- One entry per user: "@Name" when the prefix has "@", plain "Name"
--- otherwise. A user matches on Name, DisplayName, or UserId prefix but is
--- only ever emitted once. The dropdown renders "@Name (DisplayName)".
+-- otherwise. A user matches on Name or DisplayName but is only ever
+-- emitted once. The dropdown renders "@Name (DisplayName)".
 function CommandBar:GetPlayerCompletions(prefix)
 	prefix = tostring(prefix or "")
 	local hasAt = prefix:sub(1, 1) == "@"
@@ -642,14 +634,10 @@ function CommandBar:GetPlayerCompletions(prefix)
 		for _, p in ipairs(players) do
 			local nameOk, name = pcall(function() return p.Name end)
 			local dispOk, disp = pcall(function() return p.DisplayName end)
-			local idOk, id = pcall(function() return p.UserId end)
 			if nameOk and type(name) == "string" and name ~= "" then
 				local matches = name:lower():sub(1, #lower) == lower
 				if not matches and dispOk and type(disp) == "string" and disp ~= "" then
 					matches = disp:lower():sub(1, #lower) == lower
-				end
-				if not matches and idOk and lower ~= "" then
-					matches = tostring(id):sub(1, #clean) == clean
 				end
 				if matches then
 					if hasAt then
@@ -1130,7 +1118,7 @@ function CommandBar:__ResolvePlayerSelector(selector)
 				end
 			end
 		else
-			-- @name / @userid forces a direct user match (never a selector keyword).
+			-- @name forces a direct user match (never a selector keyword).
 			local mention = lower:match("^@(.+)$")
 			local target = nil
 			if mention then
@@ -1974,7 +1962,7 @@ function CommandBar:InitBuiltInCommands()
 				self:WriteLine("Player Selectors:", Color3.fromRGB(255, 230, 100))
 				self:WriteLine("\tall, others, me, team/allies, enemies/nonteam,", Color3.fromRGB(200, 200, 200))
 				self:WriteLine("\tfriends, nonfriends, alive, dead", Color3.fromRGB(200, 200, 200))
-				self:WriteLine("\t@user / @userid    Direct user (partial name ok, id must be full)", Color3.fromRGB(200, 200, 200))
+				self:WriteLine("\t@user    Direct user (partial name ok)", Color3.fromRGB(200, 200, 200))
 				self:WriteLine("\t,  +  -            Combine/include/exclude: all-me, team-me,bob", Color3.fromRGB(200, 200, 200))
 				self:WriteLine("Available Commands:", Color3.fromRGB(255, 230, 100))
 				local seen = {}
@@ -2144,6 +2132,11 @@ function CommandBar:Create()
         BackgroundTransparency = 0.15
     }, {
         CommandBar:New("UICorner"),
+        CommandBar:New("UIStroke", {
+            ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+            Color = Color3.fromRGB(80,80,80),
+			Transparency = 0.1
+        }),
         CommandBar:MakeBlur()
     })
 
@@ -2375,11 +2368,6 @@ function CommandBar:Create()
                         local nm = p.Name
                         local dp = p.DisplayName
                         if nm and (item == nm or item == "@" .. nm or item == dp) then
-                            found = p
-                            break
-                        end
-                        local uid = p.UserId
-                        if uid and item == tostring(uid) then
                             found = p
                             break
                         end
@@ -2798,6 +2786,11 @@ function CommandBar:Notify(Title, Content, Duration)
             TopLeftRadius = UDim.new(0, 4),
             TopRightRadius = UDim.new(0, 12),
         }),
+		CommandBar:New("UIStroke", {
+            ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+            Color = Color3.fromRGB(80,80,80),
+			Transparency = 0.1
+        }),
         CommandBar:New("TextLabel", {
             Name = "Title",
             Position = UDim2.new(0, 8, 0, 0),
@@ -2920,7 +2913,7 @@ function CommandBar:Notify(Title, Content, Duration)
         while Remaining > 0 do
             if Closed then return end
             local dt = task.wait()
-            Remaining -= (Hovered and dt * 0.5 or dt)
+            Remaining = Remaining - (Hovered and dt * 0.5 or dt)
         end
 
         CloseNotification()
@@ -2970,7 +2963,7 @@ function CommandBar:CreateMenu(Title)
 	local MenuFont = Font.fromEnum(Enum.Font.SourceSans)
 
 	local function nextOrder()
-		Menu._order += 1
+		Menu._order = Menu._order + 1
 		return Menu._order
 	end
 
@@ -3164,7 +3157,7 @@ function CommandBar:CreateMenu(Title)
 			local Row = CommandBar:New("Frame", {
 				Parent = Content,
 				BackgroundTransparency = 1,
-				Size = UDim2.new(1, 0, 0, 48),
+				Size = UDim2.new(1, 0, 0, 44),
 				LayoutOrder = nextOrder(),
 			}, {
 				CommandBar:New("TextLabel", {
@@ -3193,8 +3186,8 @@ function CommandBar:CreateMenu(Title)
 				CommandBar:New("TextButton", {
 					Name = "Bar",
 					AnchorPoint = Vector2.new(0, 1),
-					Position = UDim2.new(0, 0, 1, -6),
-					Size = UDim2.new(1, 0, 0, 8),
+					Position = UDim2.new(0, 7, 1, -6),
+					Size = UDim2.new(1, -14, 0, 7),
 					AutoButtonColor = false,
 					Text = "",
 					BackgroundColor3 = OffBg,
@@ -3211,7 +3204,7 @@ function CommandBar:CreateMenu(Title)
 					CommandBar:New("Frame", {
 						Name = "Knob",
 						AnchorPoint = Vector2.new(0.5, 0.5),
-						Size = UDim2.new(0, 14, 0, 14),
+						Size = UDim2.new(0, 12, 0, 12),
 						BackgroundColor3 = Color3.new(1, 1, 1),
 						BorderSizePixel = 0,
 					}, {
@@ -3273,6 +3266,167 @@ function CommandBar:CreateMenu(Title)
 				return Value
 			end
 			apply(Value, false)
+			table.insert(Menu._controls, Ctrl)
+			return Ctrl
+		end
+
+		function Section:RangeSlider(Config)
+			Config = Config or {}
+			local Min = Config.Min or 0
+			local Max = Config.Max or 100
+			local Inc = Config.Increment or 1
+			local Suffix = Config.Suffix or ""
+			local Def = Config.Default or {Min, Max}
+			local Lo = math.clamp(tonumber(Def[1]) or Min, Min, Max - 1)
+			local Hi = math.clamp(tonumber(Def[2]) or Max, Lo + 1, Max)
+			local Row = CommandBar:New("Frame", {
+				Parent = Content,
+				BackgroundTransparency = 1,
+				Size = UDim2.new(1, 0, 0, 44),
+				LayoutOrder = nextOrder(),
+			}, {
+				CommandBar:New("TextLabel", {
+					Name = "Name",
+					BackgroundTransparency = 1,
+					Position = UDim2.new(0, 0, 0, 0),
+					Size = UDim2.new(1, -90, 0, 20),
+					FontFace = MenuFont,
+					TextSize = 14,
+					TextXAlignment = Enum.TextXAlignment.Left,
+					TextColor3 = Fg,
+					Text = Config.Name or "Range",
+				}),
+				CommandBar:New("TextLabel", {
+					Name = "Value",
+					BackgroundTransparency = 1,
+					AnchorPoint = Vector2.new(1, 0),
+					Position = UDim2.new(1, 0, 0, 0),
+					Size = UDim2.new(0, 90, 0, 20),
+					FontFace = MenuFont,
+					TextSize = 14,
+					TextXAlignment = Enum.TextXAlignment.Right,
+					TextColor3 = Dim,
+					Text = "",
+				}),
+				CommandBar:New("TextButton", {
+					Name = "Bar",
+					AnchorPoint = Vector2.new(0, 1),
+					Position = UDim2.new(0, 7, 1, -6),
+					Size = UDim2.new(1, -14, 0, 7),
+					AutoButtonColor = false,
+					Text = "",
+					BackgroundColor3 = OffBg,
+				}, {
+					CommandBar:New("UICorner", {CornerRadius = UDim.new(1, 0)}),
+					CommandBar:New("Frame", {
+						Name = "Fill",
+						BackgroundColor3 = Accent,
+						BorderSizePixel = 0,
+						Size = UDim2.new(0, 0, 1, 0),
+						Position = UDim2.new(0, 0, 0, 0),
+					}, {
+						CommandBar:New("UICorner", {CornerRadius = UDim.new(1, 0)}),
+					}),
+					CommandBar:New("Frame", {
+						Name = "LoKnob",
+						AnchorPoint = Vector2.new(0.5, 0.5),
+						Size = UDim2.new(0, 12, 0, 12),
+						BackgroundColor3 = Color3.new(1, 1, 1),
+						BorderSizePixel = 0,
+					}, {
+						CommandBar:New("UICorner", {CornerRadius = UDim.new(1, 0)}),
+					}),
+					CommandBar:New("Frame", {
+						Name = "HiKnob",
+						AnchorPoint = Vector2.new(0.5, 0.5),
+						Size = UDim2.new(0, 12, 0, 12),
+						BackgroundColor3 = Color3.new(1, 1, 1),
+						BorderSizePixel = 0,
+					}, {
+						CommandBar:New("UICorner", {CornerRadius = UDim.new(1, 0)}),
+					}),
+				}),
+			})
+			local ValueLabel = Row:FindFirstChild("Value")
+			local Bar = Row:FindFirstChild("Bar")
+			local Fill = Bar:FindFirstChild("Fill")
+			local LoKnob = Bar:FindFirstChild("LoKnob")
+			local HiKnob = Bar:FindFirstChild("HiKnob")
+			local Dragging = nil
+			local function snap(v)
+				return math.clamp(Min + math.floor((v - Min) / Inc + 0.5) * Inc, Min, Max)
+			end
+			local function ratio(v)
+				if Max <= Min then return 0 end
+				return math.clamp((v - Min) / (Max - Min), 0, 1)
+			end
+			local function paint()
+				local rLo, rHi = ratio(Lo), ratio(Hi)
+				Fill.Position = UDim2.new(rLo, 0, 0, 0)
+				Fill.Size = UDim2.new(rHi - rLo, 0, 1, 0)
+				LoKnob.Position = UDim2.new(rLo, 0, 0.5, 0)
+				HiKnob.Position = UDim2.new(rHi, 0, 0.5, 0)
+				ValueLabel.Text = tostring(Lo) .. " - " .. tostring(Hi) .. Suffix
+			end
+			local function fire()
+				if type(Config.Callback) == "function" then
+					Config.Callback(Lo, Hi)
+				end
+			end
+			local function fromX(x, which)
+				local pos = Bar.AbsolutePosition.X
+				local size = Bar.AbsoluteSize.X
+				if size <= 0 then return end
+				local v = snap(Min + math.clamp((x - pos) / size, 0, 1) * (Max - Min))
+				if which == "lo" then
+					Lo = math.clamp(v, Min, Hi - 1)
+				elseif which == "hi" then
+					Hi = math.clamp(v, Lo + 1, Max)
+				else
+					local dLo = math.abs(v - Lo)
+					local dHi = math.abs(v - Hi)
+					if dLo <= dHi then
+						Lo = math.clamp(v, Min, Hi - 1)
+					else
+						Hi = math.clamp(v, Lo + 1, Max)
+					end
+				end
+				paint()
+				fire()
+			end
+			Bar.InputBegan:Connect(function(input)
+				if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+					local pos = Bar.AbsolutePosition.X
+					local size = Bar.AbsoluteSize.X
+					local r = size > 0 and math.clamp((input.Position.X - pos) / size, 0, 1) or 0
+					local rLo = ratio(Lo)
+					local rHi = ratio(Hi)
+					Dragging = math.abs(r - rLo) <= math.abs(r - rHi) and "lo" or "hi"
+					fromX(input.Position.X, Dragging)
+					input.Changed:Connect(function()
+						if input.UserInputState == Enum.UserInputState.End then
+							Dragging = nil
+						end
+					end)
+				end
+			end)
+			UserInputService.InputChanged:Connect(function(input)
+				if not Dragging then return end
+				if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+					fromX(input.Position.X, Dragging)
+				end
+			end)
+			local Ctrl = {}
+			function Ctrl:Set(lo, hi)
+				if lo ~= nil then Lo = math.clamp(tonumber(lo) or Lo, Min, Max - 1) end
+				if hi ~= nil then Hi = math.clamp(tonumber(hi) or Hi, Lo + 1, Max) end
+				paint()
+				fire()
+			end
+			function Ctrl:Get()
+				return Lo, Hi
+			end
+			paint()
 			table.insert(Menu._controls, Ctrl)
 			return Ctrl
 		end
