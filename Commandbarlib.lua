@@ -17,6 +17,7 @@ local CommandBar = {
     MaxHistory = 200,
     MaxVariables = 100,
     Prefix = ".",
+	UnloadCallbacks = {},
     SelectorKeywords = {
         ["all"] = true,
         ["others"] = true,
@@ -121,10 +122,6 @@ function CommandBar:MakeBlur()
     })
 end
 
--- Registry (behavior ported from robloxCLI Registry.lua) ----------------------
--- Plain-syntax port: no annotations, no casts, no compound assignments,
--- no `continue`, so it parses in stock executors.
-
 local function trim(s)
 	return (s:match("^%s*(.-)%s*$"))
 end
@@ -153,7 +150,6 @@ local function isInstance(v)
 	return false
 end
 
--- Parses "all-me,enemies" into signed tokens where commas inherit +/-.
 local function parseSelectorTokens(s)
 	local tokens = {}
 	local currentSign = "+"
@@ -172,7 +168,6 @@ local function parseSelectorTokens(s)
 			currentSign = c
 		elseif c == "," then
 			flush()
-			-- comma inherits sign; do not reset currentSign
 		else
 			current = current .. c
 		end
@@ -192,9 +187,7 @@ local function getOrderedArguments(args)
 	for key, config in pairs(args) do
 		table.insert(ordered, { Key = key, Config = config })
 	end
-	-- An explicit Index always wins over a numeric key: `["1"]` with
-	-- Index = 4 belongs in slot 4, not slot 1. Falls back to the numeric
-	-- key, then to the end. (tonumber() guards non-numeric junk.)
+
 	local function slotIndex(item)
 		if type(item.Config) == "table" and tonumber(item.Config.Index) ~= nil then
 			return tonumber(item.Config.Index)
@@ -212,8 +205,6 @@ local function getOrderedArguments(args)
 	return ordered
 end
 
--- Safe arithmetic evaluator (no loadstring): supports + - * / % ^,
--- parentheses, unary minus/plus and decimals. Returns number or nil + error.
 local function evalMath(expr)
 	local tokens = {}
 	local i = 1
@@ -377,8 +368,6 @@ local function evalMath(expr)
 	return result
 end
 
--- True when a string contains only math characters (digits, +-*/%^,
--- dots, parens, whitespace) with at least one digit and one operator.
 local function isMathLike(s)
 	if not s:find("%d") then
 		return false
@@ -389,7 +378,6 @@ local function isMathLike(s)
 	return s:match("^[%d%s%+%-%*/%%^%(%)%.]+$") ~= nil
 end
 
--- Output sink. Override this to route command output into your UI.
 function CommandBar:WriteLine(text, color)
 	if CommandBar.Notify then
 		CommandBar:Notify("", text, 5)
@@ -399,11 +387,6 @@ end
 function CommandBar:ClearOutput()
 end
 
--- Tooltip hook. Empty by default; override to display `text` anchored to
--- `boundingFrame` (the hovered suggestion row).
--- The autocomplete dropdown calls this with the full description when
--- hovering a row whose text was truncated, and commands can call it to
--- surface more info whenever a description is too long to fit.
 function CommandBar:AddTooltip(BoundingFrame, Text)
 	if not Text then return end
 
@@ -459,8 +442,6 @@ function CommandBar:__GetOrderedArguments(cmdData)
 	return getOrderedArguments(cmdData.Arguments)
 end
 
--- History --------------------------------------------------------------------
-
 function CommandBar:ClearHistory()
 	clearTable(self.CmdHistory)
 	self.HistoryIdx = 1
@@ -487,8 +468,6 @@ function CommandBar:__GetHistory(direction)
 	end
 	return self.CmdHistory[self.HistoryIdx] or ""
 end
-
--- Command lookup / completion -------------------------------------------------
 
 function CommandBar:__IsSelectorKeyword(str)
 	return self.SelectorKeywords[str:lower()] == true
@@ -541,11 +520,8 @@ function CommandBar:__FormatSelector(selector)
 	return out
 end
 
--- Matches a raw token to a player by Name/DisplayName only:
--- exact match first, then partial (substring) match.
 local function matchUserToken(token)
 	if token == "" then return nil end
-	-- Tolerate a leading "@" (mention inserts, quoted "@Name").
 	if token:sub(1, 1) == "@" then
 		token = token:sub(2)
 		if token == "" then return nil end
@@ -578,7 +554,6 @@ function CommandBar:__IsCommandName(str)
 	return self:__FindCommand(str) ~= nil
 end
 
--- Returns all command names (including aliases) starting with prefix.
 function CommandBar:GetCompletions(prefix)
 	local lower = prefix:lower()
 	local seen = {}
@@ -598,10 +573,6 @@ function CommandBar:GetCompletions(prefix)
 	return out
 end
 
--- Player-name / selector completions for a raw prefix (e.g. "bu", "@bu", "al").
--- One entry per user: "@Name" when the prefix has "@", plain "Name"
--- otherwise. A user matches on Name or DisplayName but is only ever
--- emitted once. The dropdown renders "@Name (DisplayName)".
 function CommandBar:GetPlayerCompletions(prefix)
 	prefix = tostring(prefix or "")
 	local hasAt = prefix:sub(1, 1) == "@"
@@ -609,7 +580,6 @@ function CommandBar:GetPlayerCompletions(prefix)
 	if hasAt then
 		clean = prefix:sub(2)
 	end
-	-- Strip a leading quote so `"Bob` still matches.
 	if clean:sub(1, 1) == '"' or clean:sub(1, 1) == "'" then
 		clean = clean:sub(2)
 	end
@@ -653,7 +623,6 @@ function CommandBar:GetPlayerCompletions(prefix)
 	return out
 end
 
--- "$"-variable completions (e.g. "$t" -> "$target").
 function CommandBar:GetVariableCompletions(prefix)
 	prefix = tostring(prefix or "")
 	if prefix:sub(1, 1) ~= "$" then
@@ -681,9 +650,6 @@ function CommandBar:__GetArgConfig(cmdData, argIndex)
 	return ordered[argIndex] and ordered[argIndex].Config or nil
 end
 
--- Completions for a specific argument of a command, filtered by prefix.
--- Flag switches (`--Name`) are suggested alongside positional matches since
--- flags are accepted anywhere in the line.
 function CommandBar:GetArgumentCompletions(cmdName, argIndex, prefix)
 	local res = self:__GetArgumentCompletionsInner(cmdName, argIndex, prefix)
 	if cmdName then
@@ -712,7 +678,6 @@ function CommandBar:GetArgumentCompletions(cmdName, argIndex, prefix)
 	return res
 end
 
--- Positional completion core (no flag extras); see GetArgumentCompletions.
 function CommandBar:__GetArgumentCompletionsInner(cmdName, argIndex, prefix)
 	prefix = tostring(prefix or "")
 	if prefix:sub(1, 1) == "$" then
@@ -727,7 +692,6 @@ function CommandBar:__GetArgumentCompletionsInner(cmdName, argIndex, prefix)
 		cfg = self:__GetArgConfig(cmdData, argIndex)
 	end
 	local lower = prefix:lower()
-	-- Commands that take another command name (man, alias, history, ...) complete commands.
 	if cmdData and cfg and (cfg.Name == "CommandName" or cfg.Name == "Command" or cfg.Name == "Action") then
 		local cmds = self:GetCompletions(prefix)
 		if cmdName and tostring(cmdName):lower() == "history" then
@@ -744,7 +708,6 @@ function CommandBar:__GetArgumentCompletionsInner(cmdName, argIndex, prefix)
 			return out
 		end
 		if cfg.Type == "string" and #cmds > 0 then
-			-- For `man <cmd>` also fall through to players below when nothing matches.
 			if not (tostring(cmdName):lower() == "alias" and argIndex == 2) then
 				return cmds
 			end
@@ -766,7 +729,6 @@ function CommandBar:__GetArgumentCompletionsInner(cmdName, argIndex, prefix)
 		elseif t == "integer" or t == "number" then
 			return self:GetVariableCompletions(prefix)
 		else
-			-- string / any / unknown: offer players + commands + variables that match.
 			local seen = {}
 			local out = {}
 			local function pushList(list)
@@ -784,7 +746,6 @@ function CommandBar:__GetArgumentCompletionsInner(cmdName, argIndex, prefix)
 			return out
 		end
 	end
-	-- Unknown command / trailing free args: same mixed fallback.
 	local seen = {}
 	local out = {}
 	local function pushList(list)
@@ -804,15 +765,12 @@ function CommandBar:__GetArgumentCompletionsInner(cmdName, argIndex, prefix)
 	return out
 end
 
--- Splits `fullText` at `cursorPos` into the token being typed.
--- Returns token, tokenStart (1-indexed into fullText), isFirstToken, cmdName, argIndex.
 function CommandBar:GetTokenInfo(fullText, cursorPos)
 	fullText = tostring(fullText or "")
 	cursorPos = tonumber(cursorPos) or (#fullText + 1)
 	if cursorPos < 1 then cursorPos = 1 end
 	if cursorPos > #fullText + 1 then cursorPos = #fullText + 1 end
 	local before = fullText:sub(1, cursorPos - 1)
-	-- Only complete the last chained segment (after ; && ||).
 	local segStart = 1
 	do
 		local lastSemi, lastAnd, lastOr = 0, 0, 0
@@ -844,10 +802,8 @@ function CommandBar:GetTokenInfo(fullText, cursorPos)
 	local argIndex = 1
 	if not isFirst then
 		local segText = trim(before:sub(segStart))
-		-- First word of the segment is the command name.
 		local first = segText:match("^(%S+)")
 		if first then
-			-- Strip leading "!" (repeat syntax) for lookup.
 			if first:sub(1, 1) == "!" then
 				first = first:sub(2)
 			end
@@ -857,10 +813,6 @@ function CommandBar:GetTokenInfo(fullText, cursorPos)
 		if #parsedBefore == 0 then
 			argIndex = 1
 		else
-			-- Flags (--name) occupy no positional slot (execution pulls them
-			-- out anywhere in the line), so count only non-flag tokens after
-			-- the command itself. Matches execution: quoted tokens are never
-			-- flags, even if they look like one.
 			local flagNames = {}
 			local cdata = cmdName and self:__FindCommand(tostring(cmdName)) or nil
 			if cdata and cdata.Arguments then
@@ -876,7 +828,6 @@ function CommandBar:GetTokenInfo(fullText, cursorPos)
 				local tok = parsedBefore[pIdx]
 				local v = tostring(tok.Value or ""):lower():gsub("^%-+", "")
 				if not tok.Quoted and flagNames[v] then
-					-- flag token: no positional slot
 				else
 					slots = slots + 1
 				end
@@ -888,9 +839,6 @@ function CommandBar:GetTokenInfo(fullText, cursorPos)
 	return token, tokenStart, isFirst, cmdName, argIndex
 end
 
--- Info rows describing the expected arguments from argIndex onward, e.g.
--- "<Targets: players>", "[Message: string]", "[--Shout: flag]".
--- Display-only: Tab never applies these.
 function CommandBar:GetArgInfoRows(cmdName, argIndex)
 	local rows = {}
 	if not cmdName then
@@ -923,16 +871,11 @@ function CommandBar:GetArgInfoRows(cmdName, argIndex)
 	return rows
 end
 
--- Main entry for the UI: given the input text + cursor, returns
--- { Items, Token, TokenStart, IsFirst, CmdName, ArgIndex, Applicable }.
--- Only command names complete (Tab applies them); argument positions show
--- read-only type rows from GetArgInfoRows instead.
 function CommandBar:GetSuggestions(fullText, cursorPos)
 	fullText = tostring(fullText or "")
 	local token, tokenStart, isFirst, cmdName, argIndex = self:GetTokenInfo(fullText, cursorPos)
 	local items = {}
 	local applicable = false
-	-- Strip a leading quote for matching; ApplyCompletion re-adds it.
 	local clean = token
 	if clean:sub(1, 1) == '"' or clean:sub(1, 1) == "'" then
 		clean = clean:sub(2)
@@ -948,8 +891,6 @@ function CommandBar:GetSuggestions(fullText, cursorPos)
 		items = self:GetCompletions(token)
 		applicable = true
 	else
-		-- Arguments that take another command name (man/alias/history)
-		-- still complete command names; everything else shows types.
 		local cmdData = cmdName and self:__FindCommand(tostring(cmdName)) or nil
 		local cfg = cmdData and self:__GetArgConfig(cmdData, argIndex) or nil
 		local isCmdNameArg = type(cfg) == "table"
@@ -987,21 +928,17 @@ function CommandBar:GetSuggestions(fullText, cursorPos)
 	}
 end
 
--- Replaces the token at `tokenStart..cursorPos` with `completion`.
--- Returns the new text and new cursor position. Pure (no UI side effects).
 function CommandBar:ApplyCompletion(fullText, cursorPos, tokenStart, completion)
 	fullText = tostring(fullText or "")
 	cursorPos = tonumber(cursorPos) or (#fullText + 1)
 	completion = tostring(completion or "")
 	local before = fullText:sub(1, tokenStart - 1)
 	local after = fullText:sub(cursorPos)
-	-- Preserve a leading quote the user already typed.
 	local token = fullText:sub(tokenStart, cursorPos - 1)
 	local lead = token:sub(1, 1)
 	if (lead == '"' or lead == "'") and completion:sub(1, 1) ~= lead then
 		completion = lead .. completion
 	end
-	-- After a command name, append a space so the user can keep typing args.
 	local suffix = ""
 	if after == "" then
 		local _, _, isFirst = self:GetTokenInfo(fullText, cursorPos)
@@ -1118,7 +1055,6 @@ function CommandBar:__ResolvePlayerSelector(selector)
 				end
 			end
 		else
-			-- @name forces a direct user match (never a selector keyword).
 			local mention = lower:match("^@(.+)$")
 			local target = nil
 			if mention then
@@ -1257,8 +1193,6 @@ function CommandBar:__ParseArgs(rawString)
 				i = i + 1
 			end
 		else
-			-- Scan manually instead of string.find("%s", ...) so an escaped
-			-- space (\ ) stays part of this token rather than ending it.
 			local start = i
 			local j = i
 			while j <= len do
@@ -1282,8 +1216,6 @@ function CommandBar:__ParseArgs(rawString)
 	return args
 end
 
--- Splits a full input line into chained segments separated by
--- ; && || while respecting quotes/escapes.
 function CommandBar:__SegmentInput(trimmed)
 	local segments = {}
 	local current = ""
@@ -1352,7 +1284,6 @@ function CommandBar:__SegmentInput(trimmed)
 	return segments
 end
 
--- Legacy direct dispatch: Execute("name", {"arg1", ...}).
 function CommandBar:__ExecuteLegacy(command, arguments)
 	local key = tostring(command or ""):lower()
 	local cmdData = self:__FindCommand(key)
@@ -1373,13 +1304,11 @@ function CommandBar:__ExecuteLegacy(command, arguments)
 end
 
 function CommandBar:Execute(raw, arguments, NoErrors)
-	-- Support both CommandBar:Execute("...") and CommandBar.Execute("...").
 	if type(self) == "string" then
 		arguments = raw
 		raw = self
 		self = CommandBar
 	end
-	-- Legacy form: Execute("name", {...}).
 	if type(arguments) == "table" then
 		return self:__ExecuteLegacy(raw, arguments)
 	end
@@ -1408,7 +1337,6 @@ function CommandBar:Execute(raw, arguments, NoErrors)
 	return lastSuccess, lastResult
 end
 
--- Convenience wrapper: keeps the old TextBox entry point working.
 function CommandBar:ExecuteString(raw, IsMessage)
 	if type(self) == "string" then
 		raw = self
@@ -1418,7 +1346,6 @@ function CommandBar:ExecuteString(raw, IsMessage)
 end
 
 function CommandBar:__ExecuteSegment(text)
-	-- Repeat last invocation: !cmd
 	if text:sub(1, 1) == "!" then
 		local cmdName = trim(text:sub(2)):lower()
 		local lastArgs = self.LastCommandArgs[cmdName]
@@ -1441,7 +1368,6 @@ function CommandBar:__ExecuteSegment(text)
 		end
 	end
 
-	-- Variable assignment: $Var = value
 	local varName, varValue = text:match("^%$(%w+)%s*=%s*(.+)$")
 	if varName then
 		if countMap(self.Variables) >= self.MaxVariables and self.Variables[varName] == nil then
@@ -1472,7 +1398,6 @@ function CommandBar:__ExecuteSegment(text)
 		return true, stripped
 	end
 
-	-- List variables: $$
 	if text == "$$" then
 		self:WriteLine("Variables:", Color3.fromRGB(255, 230, 100))
 		local count = 0
@@ -1490,7 +1415,6 @@ function CommandBar:__ExecuteSegment(text)
 		return true
 	end
 
-	-- Read variable: $Var
 	local readName = text:match("^%$(%w+)$")
 	if readName then
 		local value = self.Variables[readName]
@@ -1507,7 +1431,6 @@ function CommandBar:__ExecuteSegment(text)
 	return self:__InternalExecute(text)
 end
 
--- "Usage: kill <Target> [--Silent] [Reason]" from declared arguments.
 function CommandBar:__BuildUsage(cmdName, cmdData)
 	local parts = { tostring(cmdName) }
 	if cmdData and cmdData.Arguments then
@@ -1563,8 +1486,6 @@ function CommandBar:__InternalExecute(trimmed)
 			self:WriteLine(string.format("'%s' is ambiguous. Did you mean: %s", name, table.concat(matches, ", ")), Color3.fromRGB(255, 200, 100))
 			return false, "ambiguous"
 		else
-			-- Full-line arithmetic, e.g. `5.987 ^ 2 - 12`.
-			-- Placeholder `= result` output until notifications land.
 			if isMathLike(trimmed) then
 				local mathVal = evalMath(trimmed)
 				if mathVal ~= nil then
@@ -1580,9 +1501,6 @@ function CommandBar:__InternalExecute(trimmed)
 	local mapArgs = {}
 	if cmdData.Arguments then
 		local ordered = self:__GetOrderedArguments(cmdData)
-		-- Pass 1: pull flags out anywhere in the line. Flags never occupy a
-		-- positional slot, so `cmd target --shout` and `cmd --shout target`
-		-- behave the same. Quoted tokens are literal and never flags.
 		local flagDefs = {}
 		for _, item in ipairs(ordered) do
 			if type(item.Config) == "table" and item.Config.Type == "flag" then
@@ -1609,8 +1527,6 @@ function CommandBar:__InternalExecute(trimmed)
 				mapArgs[item.Key] = dflt
 			end
 		end
-		-- Last slot that consumes positionally (a trailing player argument
-		-- slurps the rest of the line into itself).
 		local lastPos = 0
 		for op, it in ipairs(ordered) do
 			if not (type(it.Config) == "table" and it.Config.Type == "flag") then
@@ -1623,7 +1539,6 @@ function CommandBar:__InternalExecute(trimmed)
 			local key = item.Key
 			local config = item.Config
 			if type(config) == "table" and config.Type == "flag" then
-				-- Resolved in pass 1; occupies no positional slot.
 			else
 				local argData = positional[positionalIdx]
 				local rawVal = nil
@@ -1641,8 +1556,6 @@ function CommandBar:__InternalExecute(trimmed)
 				else
 					local rawStr = rawVal
 					if config.Type == "player" or config.Type == "players" then
-						-- A trailing player argument consumes the rest of the line,
-						-- so `kill me, user1, user2` works with or without spaces.
 						local targetStr = rawStr
 						local literalOnly = argData and argData.Quoted or false
 						if not literalOnly and orderPos == lastPos then
@@ -1657,7 +1570,6 @@ function CommandBar:__InternalExecute(trimmed)
 						end
 						local list = nil
 						if literalOnly then
-							-- Quoted values are literal names, never selector syntax.
 							local single = matchUserToken(targetStr)
 							if single then
 								list = { single }
@@ -1790,8 +1702,6 @@ function CommandBar:__InternalExecute(trimmed)
 	return true, err
 end
 
--- Legacy registration: Register("name", fn) or Register("name", "desc", fn).
--- Wraps the callback into a RegisterCommand-style config so old code keeps working.
 function CommandBar:Register(name, descriptionOrCallback, callback)
 	local description
 	local fn
@@ -1827,19 +1737,7 @@ function CommandBar:Unregister(name)
 	return self:UnregisterCommand(name)
 end
 
--- Reference-style registration:
---   RegisterCommand("kill", { Description = "...", Arguments = { ... }, Function = function(args) ... end })
---   RegisterCommand({"kill", "murder"}, { ... })  -- multiple names at once
---   config.Aliases = {"k"}                        -- extra names
--- Argument config: { Name = "Target", Type = "player"/"players"/"string"/"any"/"integer"/"number"/"boolean"/"flag",
---                    Required = true/false, Default = ..., Index = 1 }
---   "player"  -> first matched player (rest in args["_players"]); trailing one eats the rest of the line
---   "players" -> always a list of every matched player
---   "integer"/"number"/"any" accept arithmetic, e.g. 10*5 ("integer" rejects fractions)
---   "boolean" -> true/false/1/0/yes/no/on/off (anything else is an error)
---   "flag"    -> position-free switch, matched as `Name` or `--Name` anywhere in the line
--- Rules: put required positionals (Required + no Default) before optional ones;
--- a required positional after an optional one is a registration error.
+
 function CommandBar:RegisterCommand(name, config)
 	if not name or type(config) ~= "table" or type(config.Function) ~= "function" then
 		warn("Invalid command configuration injected.")
@@ -1870,10 +1768,6 @@ function CommandBar:RegisterCommand(name, config)
 			warn(string.format("RegisterCommand: argument '%s' of '%s' has unknown Type '%s'; it will be treated as raw text.", tostring(item.Key), label, tostring(cfg.Type)))
 		end
 		if cfg.Type ~= "flag" then
-			-- An argument is effectively optional when omitting it still runs
-			-- (not Required, or a Default fills in). A required positional can
-			-- never be reached after one of those, so fail fast here instead
-			-- of mis-parsing every call.
 			local optional = (not cfg.Required) or (cfg.Default ~= nil)
 			if optional then
 				seenOptional = true
@@ -2087,21 +1981,17 @@ function CommandBar:InitBuiltInCommands()
 end
 
 function CommandBar:Create()
-    -- Destroy any previous UI so calling Create() twice doesn't duplicate/stack.
     if CommandBar.ScreenGui then
         pcall(function() CommandBar.ScreenGui:Destroy() end)
         CommandBar.ScreenGui = nil
         CommandBar.MainFrame = nil
     end
 
-    -- Resolve a parent that works in executors and in normal clients.
     local Parent = nil
     pcall(function()
-        if typeof and typeof(gethui) == "function" then
+        if typeof(gethui) == "function" then
             Parent = gethui()
-        elseif type(gethui) == "function" then
-            Parent = gethui()
-        end
+		end
     end)
     if Parent == nil then
         pcall(function() Parent = game:GetService("CoreGui") end)
@@ -2173,10 +2063,6 @@ function CommandBar:Create()
 		})
 	})
 
-	-- CanvasGroup (same class as notification frames) so open/close can
-	-- reuse the notification GroupTransparency + Size tweens below.
-	-- The window height is tweened explicitly per render; the inner list
-	-- keeps a manual CanvasSize so it scrolls instead of growing forever.
 	CommandBar.AutoComplete = CommandBar:New("CanvasGroup", {
 		Parent = CommandBar.MainFrame,
 		Name = "AutoComplete",
@@ -2288,15 +2174,8 @@ function CommandBar:Create()
         ClearTextOnFocus = false,
         RichText = false,
     })
-
-    -- AutoComplete controller -------------------------------------------------
-    -- Live suggestions via CommandBar:GetSuggestions; Tab applies the
-    -- highlighted/hovered row, Up/Down navigates (or history when hidden),
-    -- Esc hides. Open/close fades reuse the notification tweens (0.15s
-    -- Quart In/Out on GroupTransparency). Idling focused for 3s previews
-    -- all commands.
-    do
-        -- Disconnect the previous controller's global key handler on re-Create().
+	
+	do
         if CommandBar._acConn then
             pcall(function() CommandBar._acConn:Disconnect() end)
             CommandBar._acConn = nil
@@ -2311,10 +2190,7 @@ function CommandBar:Create()
         local TokenStart = 1
         local LastCursor = 1
         local CurrentIsFirst = true
-        -- False while the list shows read-only argument-type rows, which
-        -- Tab must not apply.
         local CurrentApplicable = false
-        -- Same tween shape as CommandBar:Notify open/close.
         local AcTweenIn = TweenInfo.new(0.15, Enum.EasingStyle.Quart, Enum.EasingDirection.In)
         local AcTweenOut = TweenInfo.new(0.15, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
         local AcGen = 0
@@ -2336,7 +2212,6 @@ function CommandBar:Create()
             end)
         end
 
-        -- Full (untruncated) command description for an item, or nil.
         local function getFullDesc(item, isFirst)
             local lookup = item
             if lookup:sub(1, 1) == "!" then
@@ -2360,7 +2235,6 @@ function CommandBar:Create()
                 end
                 return item .. "   -   " .. desc
             end
-            -- One row per user: "@Name (DisplayName)".
             if not isFirst then
                 local found = nil
                 pcall(function()
@@ -2384,14 +2258,11 @@ function CommandBar:Create()
             return item
         end
 
-        -- Row metrics must match the suggestion buttons built in render().
         local RowHeight = 26
         local RowGap = 2
         local ChromeHeight = 16
         local MaxListHeight = 200
 
-        -- Declared before render(): Lua locals are only visible after their
-        -- declaration, so anything render() calls must be defined above it.
         local function pokeActivity()
             LastActivity = os.clock()
             IdleDismissed = false
@@ -2429,9 +2300,6 @@ function CommandBar:Create()
             end
             AcGen = AcGen + 1
             ac.Visible = true
-            -- Playing a new tween on the same properties supersedes any
-            -- fade-out still in flight; replaying an identical tween while
-            -- typing is a visual no-op except for height changes.
             local props = { GroupTransparency = 0 }
             if targetH then
                 props.Size = UDim2.new(1, -48, 0, targetH)
@@ -2451,12 +2319,8 @@ function CommandBar:Create()
             end
         end
 
-        -- Forward declaration: render()'s click handler calls refresh(),
-        -- which is defined below. Lua locals are only visible after their
-        -- declaration, so this must exist before render() is compiled.
         local refresh
 
-        -- LayoutOrder of the suggestion row currently under the mouse, if any.
         local function rowUnderMouse()
             local mOk, m = pcall(function()
                 return UserInputService:GetMouseLocation()
@@ -2480,10 +2344,6 @@ function CommandBar:Create()
 
         local function render(resetScroll)
             if resetScroll then
-                -- The mouse may rest over the list while new results rebuild
-                -- under it (no MouseEnter fires); keep the highlight on the
-                -- row actually under the cursor so Tab follows hover.
-                -- Keyboard navigation passes false to preserve its selection.
                 local hovered = rowUnderMouse()
                 if hovered and Suggestions[hovered] then
                     Selected = hovered
@@ -2500,8 +2360,6 @@ function CommandBar:Create()
             end
             local count = #Suggestions
             if count > MaxItems then count = MaxItems end
-            -- Full text per row for the tooltip hook (only rows whose
-            -- description is truncated get an entry).
             local rowFullText = {}
             for i = 1, count do
                 local item = Suggestions[i]
@@ -2533,8 +2391,6 @@ function CommandBar:Create()
                     btn.TextColor3 = Color3.fromRGB(255, 255, 255)
                 end
                 local idx = i
-                -- Selection is Tab-only; hovering just highlights (and feeds
-                -- Tab via Selected) plus surfaces the tooltip hook below.
                 btn.MouseEnter:Connect(function()
                     pokeActivity()
                     Selected = idx
@@ -2550,7 +2406,6 @@ function CommandBar:Create()
                             end
                         end
                     end
-                    -- Full text for rows whose description was truncated.
                     local full = rowFullText[idx]
                     if full then
                         pcall(function() CommandBar:AddTooltip(btn, full) end)
@@ -2558,8 +2413,6 @@ function CommandBar:Create()
                 end)
                 btn.Parent = List
             end
-            -- Canvas covers every row so the list scrolls; the window height
-            -- stays capped and is tweened to fit.
             local contentH = count * RowHeight + math.max(count - 1, 0) * RowGap
             pcall(function()
                 List.CanvasSize = UDim2.new(0, 0, 0, contentH)
@@ -2588,9 +2441,6 @@ function CommandBar:Create()
                 if i > MaxItems then break end
                 table.insert(Suggestions, v)
             end
-            -- An empty box stays clean until the idle preview kicks in, but a
-            -- trailing space after real input keeps the type rows visible,
-            -- so completing a command (Tab) leaves the dropdown open.
             if result.Token == "" then
                 local beforeCursor = Input.Text:sub(1, math.max(cursor - 1, 0))
                 if trim(beforeCursor) == "" then
@@ -2609,7 +2459,6 @@ function CommandBar:Create()
         end
 
         local function applySelected()
-            -- Argument-type rows are display-only; only command names apply.
             if not CurrentApplicable then return end
             local comp = Suggestions[Selected]
             if not comp then return end
@@ -2617,7 +2466,6 @@ function CommandBar:Create()
             Input.Text = newText
             setCursor(newCursor)
             pcall(function() Input:CaptureFocus() end)
-            -- Text change fires refresh; force one in case the signal is suppressed.
             refresh(false)
         end
 
@@ -2629,8 +2477,6 @@ function CommandBar:Create()
             end
         end
 
-        -- Idle preview: input focused with no partial token for IdleDelay
-        -- seconds fades in the full command list.
         local function showAllCommands()
             local cursor = getCursor()
             local result = CommandBar:GetSuggestions(Input.Text, cursor)
@@ -2682,8 +2528,6 @@ function CommandBar:Create()
         Input:GetPropertyChangedSignal("CursorPosition"):Connect(function()
             local ok, focused = pcall(function() return Input:IsFocused() end)
             if ok and focused then
-                -- Skip restores we performed ourselves (arrow-key navigation),
-                -- so they don't rebuild the list and yank the scroll position.
                 local cursor = getCursor()
                 if cursor == LastCursor then
                     return
@@ -2713,8 +2557,6 @@ function CommandBar:Create()
                     Selected = Selected - 1
                     if Selected < 1 then Selected = #Suggestions end
                     render(false)
-                    -- Engine moves the TextBox cursor on arrows; put it back so
-                    -- the stored TokenStart stays valid for Tab/click apply.
                     local saved = LastCursor
                     pcall(function() task.defer(function() setCursor(saved) end) end)
                 else
@@ -2731,7 +2573,6 @@ function CommandBar:Create()
                     historyStep("Down")
                 end
             elseif code == Enum.KeyCode.Escape then
-                -- Dismiss stays dismissed until the next edit/focus.
                 IdleDismissed = true
                 hide()
             end
@@ -2750,7 +2591,7 @@ function CommandBar:Create()
     end
 
     SettingsButton.MouseButton1Click:Connect(function()
-        CommandBar:Destroy()
+        CommandBar:ExecuteString("settings")
     end)
 
     HelpButton.MouseButton1Click:Connect(function()
@@ -2864,8 +2705,6 @@ function CommandBar:Notify(Title, Content, Duration)
             Size = UDim2.new(1, 0, 0, 0)
         })
 
-        -- Explicitly fade the text too, so it's fully hidden even if
-        -- GroupTransparency/ClipsDescendants aren't respected by the environment
         if TitleLabel then
             TweenService:Create(TitleLabel, TweenInfo.new(0.25, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {TextTransparency = 1}):Play()
         end
@@ -2905,8 +2744,6 @@ function CommandBar:Notify(Title, Content, Duration)
         Size = UDim2.new(1, 0, 0, TitleHeight + ContentHeight)
     }):Play()
 
-    -- Custom countdown loop instead of task.delay, so the timer can be
-    -- slowed to half speed while the mouse is hovering the frame
     task.spawn(function()
         local Remaining = (Duration or 3) + 0.15
 
@@ -2921,16 +2758,26 @@ function CommandBar:Notify(Title, Content, Duration)
 end
 
 function CommandBar:Destroy()
+
+	for _, Func in pairs(CommandBar.UnloadCallbacks) do
+		if typeof(Func) == "function" then
+			Func()
+		end
+	end 
+
     if CommandBar._acConn then
         pcall(function() CommandBar._acConn:Disconnect() end)
         CommandBar._acConn = nil
     end
-    -- Stops the previous controller's idle-preview loop.
     CommandBar._acGen = (CommandBar._acGen or 0) + 1
     if CommandBar.ScreenGui then CommandBar.ScreenGui:Destroy() end
     CommandBar.ScreenGui = nil
     CommandBar.MainFrame = nil
     CommandBar.AutoComplete = nil
+end
+
+function CommandBar:AddUnloadCallback(func)
+	table.insert(CommandBar.UnloadCallbacks, func)
 end
 
 
@@ -2940,9 +2787,6 @@ TextChatService.SendingMessage:Connect(function(Message)
     end
 end)
 
--- Menu system: draggable windows with sections, toggles, sliders, dropdowns
--- and buttons in the CommandBar look. Call CommandBar:Create() first, since
--- menus parent to CommandBar.ScreenGui.
 function CommandBar:CreateMenu(Title)
 	if not CommandBar.ScreenGui then
 		warn("CreateMenu: call CommandBar:Create() first.")
